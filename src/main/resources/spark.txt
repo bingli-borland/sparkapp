@@ -1,0 +1,1 @@
+bin/spark-submit --driver-class-path /home/bes/libing/spark/jars/*:/home/bes/libing/spark/apps/dependency/*:/home/bes/libing/spark/jars/kafka/* --class "streaming.KafkaStreamingWordCount"  /home/bes/libing/spark/apps/spark-app-1.0.jar
