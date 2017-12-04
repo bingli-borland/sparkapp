@@ -16,11 +16,14 @@ import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.api.java.function.VoidFunction;
 import org.apache.spark.streaming.Duration;
+import org.apache.spark.streaming.Durations;
 import org.apache.spark.streaming.api.java.JavaDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaPairReceiverInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.kafka.KafkaUtils;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import scala.Tuple2;
 
@@ -62,51 +65,56 @@ public class KafkaStreamingWordCount {
 			}
 		});
 
-		// 对其中的单词进行统计
-		JavaPairDStream<String, Integer> wordCounts = words.mapToPair(new PairFunction<String, String, Integer>() {
+		// 对其中的单词进行统计(word, 1) tuple格式
+		JavaPairDStream<String, Integer> mapToPairDStream = words.mapToPair(new PairFunction<String, String, Integer>() {
 			@Override
 			public Tuple2<String, Integer> call(String s) {
 				return new Tuple2<String, Integer>(s, 1);
 			}
-		}).reduceByKey(new Function2<Integer, Integer, Integer>() {
+		});
+
+		/**
+		 * 对滑动窗口进行reduceByKeyAndWindow操作 其中，窗口长度是1秒，滑动时间间隔是1秒
+		 */
+		JavaPairDStream<String, Integer> reduceByKeyAndWindowDStream = mapToPairDStream
+				.reduceByKeyAndWindow(new Function2<Integer, Integer, Integer>() {
+
+					public Integer call(Integer v1, Integer v2) throws Exception {
+						// TODO Auto-generated method stub
+						return v1 + v2;
+					}
+				}, Durations.seconds(1), Durations.seconds(1), 1);
+		
+		reduceByKeyAndWindowDStream.foreachRDD(new VoidFunction<JavaPairRDD<String,Integer>>() {
+
 			@Override
-			public Integer call(Integer i1, Integer i2) {
-				return i1 + i2;
+			public void call(JavaPairRDD<String, Integer> rdd) throws Exception {
+				Map<String, Integer> map = rdd.collectAsMap();
+				if (map.size() > 0) {
+					publishToKafka(map);
+				}
 			}
 		});
-		//Here we iterrate over the JavaPairDStream to write words and their count into kafka
-		wordCounts.foreachRDD(new VoidFunction<JavaPairRDD<String, Integer>>() {
-		    @Override
-		    public void call(JavaPairRDD<String, Integer> arg0) throws Exception {
-		        Map<String, Integer> wordCountMap = arg0.collectAsMap();
-		        for (String key : wordCountMap.keySet()) {
-		             //Here we send event to kafka output topic
-		             publishToKafka(key, wordCountMap.get(key));
-		        }
-		    }
-		});
-		
-		// 打印结果
-		// wordCounts.print();
 		jssc.start();
 		jssc.awaitTermination();
 
 	}
 
-	public static void publishToKafka(String word, Integer count) {
-	        Map<String, Object> props = new HashMap<String, Object>();
-            props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "192.168.2.129:9092");
-            props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-            "org.apache.kafka.common.serialization.StringSerializer");
-            props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
-            "org.apache.kafka.common.serialization.StringSerializer");
-            // 实例化一个Kafka生产者
-            KafkaProducer producer = new KafkaProducer<>(props);
-            // rdd.colect即将rdd中数据转化为数组，然后write函数将rdd内容转化为json格式
-            String str = "{\"" + word +"\":" + count + "}";
-            // 封装成Kafka消息，topic为"result"
-            ProducerRecord message = new ProducerRecord<String,String>("result", null, str);
-            // 给Kafka发送消息
-            producer.send(message);
+	public static void publishToKafka(Map map) throws Exception {
+		Map<String, Object> props = new HashMap<String, Object>();
+		props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "192.168.2.129:9092");
+		props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+				"org.apache.kafka.common.serialization.StringSerializer");
+		props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+		// 实例化一个Kafka生产者
+		KafkaProducer producer = new KafkaProducer<>(props);
+		// rdd.colect即将rdd中数据转化为数组，然后write函数将rdd内容转化为json格式
+		// 写入kafka
+		ObjectMapper mapper = new ObjectMapper();
+		String str = mapper.writeValueAsString(map);
+		// 封装成Kafka消息，topic为"result"
+		ProducerRecord message = new ProducerRecord<String, String>("result", null, str);
+		// 给Kafka发送消息
+		producer.send(message);
 	}
 }
